@@ -7,11 +7,18 @@ stable document while checking every revision in the PDF renderer.
 
 ```bash
 uv tool install mdview-cli
-mdv open architecture.md
+mdv architecture.md
 ```
 
-Opening a local file does not upload it and does not require an account, token,
-or configuration.
+`mdv FILE.md` is shorthand for `mdv preview FILE.md`: it publishes the file
+anonymously and opens a temporary mdview page you can share (30-day expiry,
+2 MB limit). No account, token, or configuration required.
+
+`open` renders a local file in the browser without uploading anything at all:
+
+```bash
+mdv open architecture.md
+```
 
 ## Verify every revision
 
@@ -33,6 +40,6 @@ mdv fix architecture.md
 mdv export architecture.md
 ```
 
-`open` is token-free. `sync`, `verify`, `fix`, `export`, and `list` use a token
+`open` and `preview` are token-free. `sync`, `verify`, `fix`, `export`, and `list` use a token
 to access Saved documents. In CI, set `MDVIEW_TOKEN` instead of storing it.
 `MDVIEW_BASE_URL` overrides the service URL for development.

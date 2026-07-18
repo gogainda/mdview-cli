@@ -8,11 +8,10 @@ class ApiError(RuntimeError):
 
 
 class MdviewApi:
-    def __init__(self, base_url: str, token: str, timeout: float = 75):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str, token: str | None = None, timeout: float = 75):
         self.client = httpx.Client(
-            base_url=self.base_url,
-            headers={"Authorization": f"Bearer {token}"},
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {token}"} if token else {},
             timeout=timeout,
         )
 
@@ -30,11 +29,11 @@ class MdviewApi:
             raise ApiError(str(message), response.status_code)
         return response
 
-    def validate(self):
-        self.request("GET", "/api/documents")
-
     def create(self, title, content):
         return self.request("POST", "/api/documents", json={"title": title, "content": content}).json()
+
+    def publish(self, title, content):
+        return self.request("POST", "/api/public/publish", json={"title": title, "content": content}).json()
 
     def update(self, document_id, title, content, updated_at=None):
         body = {"title": title, "content": content}

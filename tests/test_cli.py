@@ -115,6 +115,59 @@ def test_sync_json_is_machine_readable(monkeypatch, tmp_path):
     assert payload["renderable"] is True
 
 
+def test_preview_publishes_anonymously_and_opens_share_url(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakePublisher:
+        def __init__(self, base_url, token=None, timeout=75):
+            calls["token"] = token
+
+        def publish(self, title, content):
+            calls["title"] = title
+            calls["content"] = content
+            return {"shareUrl": "https://mdview.io/s/tmp123"}
+
+    opened = []
+    monkeypatch.setattr("mdview_cli.cli.MdviewApi", FakePublisher)
+    monkeypatch.setattr("mdview_cli.cli.webbrowser.open", opened.append)
+    document = tmp_path / "notes.md"
+    document.write_text("# Notes\n\nBody.\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["preview", str(document)])
+
+    assert result.exit_code == 0
+    assert "https://mdview.io/s/tmp123" in result.output
+    assert calls["token"] is None
+    assert calls["title"] == "Notes"
+    assert opened == ["https://mdview.io/s/tmp123"]
+
+
+def test_bare_file_argument_defaults_to_preview(monkeypatch, tmp_path):
+    class FakePublisher:
+        def __init__(self, base_url, token=None, timeout=75):
+            pass
+
+        def publish(self, title, content):
+            return {"shareUrl": "https://mdview.io/s/tmp123"}
+
+    monkeypatch.setattr("mdview_cli.cli.MdviewApi", FakePublisher)
+    monkeypatch.setattr("mdview_cli.cli.webbrowser.open", lambda url: None)
+    document = tmp_path / "notes.md"
+    document.write_text("# Notes\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [str(document)])
+
+    assert result.exit_code == 0
+    assert "https://mdview.io/s/tmp123" in result.output
+
+
+def test_unknown_command_still_errors(tmp_path):
+    result = CliRunner().invoke(cli, ["snyc"])
+
+    assert result.exit_code == 2
+    assert "No such command" in result.output
+
+
 def test_fix_backs_up_rewrites_resyncs_and_verifies(monkeypatch, tmp_path):
     api = FakeApi(renderable=False)
     configure(monkeypatch, tmp_path, api)

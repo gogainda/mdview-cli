@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdview-cli"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Iterate on Markdown and verify every revision with mdview.io"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,9 @@ mdv = "mdview_cli.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "mdview_cli.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
