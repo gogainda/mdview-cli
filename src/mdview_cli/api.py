@@ -51,6 +51,9 @@ class MdviewApi:
     def fix(self, document_id):
         return self.request("POST", f"/api/documents/{document_id}/fix/diagrams", json={}).json()
 
+    def fix_markdown(self, content):
+        return self.request("POST", "/api/documents/fix/diagrams", json={"content": content}).json()
+
     def export_pdf(self, document_id):
         return self.request("GET", f"/api/documents/{document_id}/export/pdf").content
 

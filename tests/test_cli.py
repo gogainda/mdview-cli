@@ -13,6 +13,7 @@ class FakeApi:
         self.created = 0
         self.updated = 0
         self.verified = 0
+        self.shared = 0
         self.missing_on_update = False
 
     def create(self, title, content):
@@ -27,6 +28,7 @@ class FakeApi:
         return {"ok": True, "updated_at": "two"}
 
     def share(self, document_id):
+        self.shared += 1
         return {"shortId": "share123"}
 
     def verify(self, document_id, status=False):
@@ -44,6 +46,16 @@ class FakeApi:
     def fix(self, document_id):
         self.renderable = True
         return {"markdown": "# Fixed\n\n```mermaid\ngraph TD; A-->B\n```\n", "diagrams": {"fixed": 1}}
+
+    def export_pdf(self, document_id):
+        return b"%PDF-1.4 rendered"
+
+    def fix_markdown(self, content):
+        return {
+            "renderable": True,
+            "markdown": "# Fixed locally\n",
+            "diagrams": {"total": 1, "failing_before": 1, "fixed": 1, "remaining": 0},
+        }
 
 
 def configure(monkeypatch, tmp_path, api):
@@ -66,14 +78,20 @@ def test_sync_creates_once_then_updates_and_always_verifies(monkeypatch, tmp_pat
 
     assert first.exit_code == 0
     assert second.exit_code == 0
-    assert "https://mdview.io/s/share123" in second.output
+    assert "https://mdview.io/p/doc123" in second.output
     assert api.created == 1
     assert api.updated == 1
     assert api.verified == 2
+    assert api.shared == 0
 
 
-def test_sync_reports_broken_diagram_and_exits_one(monkeypatch, tmp_path):
+def test_sync_reports_broken_diagram_and_exits_one_when_repair_unavailable(monkeypatch, tmp_path):
     api = FakeApi(renderable=False)
+
+    def quota_exhausted(document_id):
+        raise ApiError("Daily Quick Fix limit reached. Upgrade to Pro for unlimited fixes.", 402)
+
+    api.fix = quota_exhausted
     configure(monkeypatch, tmp_path, api)
     document = tmp_path / "broken.md"
     document.write_text("# Broken\n", encoding="utf-8")
@@ -81,8 +99,8 @@ def test_sync_reports_broken_diagram_and_exits_one(monkeypatch, tmp_path):
     result = CliRunner().invoke(cli, ["sync", str(document)])
 
     assert result.exit_code == 1
+    assert "Auto-repair unavailable" in result.output
     assert "Diagram 0: Parse error" in result.output
-    assert "mdv fix FILE" in result.output
 
 
 def test_sync_recreates_a_deleted_associated_document(monkeypatch, tmp_path):
@@ -166,6 +184,86 @@ def test_unknown_command_still_errors(tmp_path):
 
     assert result.exit_code == 2
     assert "No such command" in result.output
+
+
+def test_share_publishes_on_request_and_sync_stays_private_until_then(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "doc.md"
+    document.write_text("# Doc\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(cli, ["sync", str(document)]).exit_code == 0
+    assert api.shared == 0
+
+    shared = runner.invoke(cli, ["share", str(document)])
+    resynced = runner.invoke(cli, ["sync", str(document)])
+
+    assert shared.exit_code == 0
+    assert shared.output.strip() == "https://mdview.io/s/share123"
+    assert api.shared == 1
+    assert "Share: https://mdview.io/s/share123" in resynced.output
+
+
+def test_sync_no_fix_skips_repair_and_exits_one(monkeypatch, tmp_path):
+    api = FakeApi(renderable=False)
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "broken.md"
+    original = "# Broken\n\n```mermaid\nnope\n```\n"
+    document.write_text(original, encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["sync", str(document), "--no-fix"])
+
+    assert result.exit_code == 1
+    assert "Diagram 0: Parse error" in result.output
+    assert document.read_text(encoding="utf-8") == original
+
+
+def test_sync_auto_repairs_broken_diagrams_and_exits_zero(monkeypatch, tmp_path):
+    api = FakeApi(renderable=False)
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "broken.md"
+    document.write_text("# Broken\n\n```mermaid\nnope\n```\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["sync", str(document)])
+
+    assert result.exit_code == 0
+    assert document.read_text(encoding="utf-8").startswith("# Fixed")
+    assert "Renderable: yes" in result.output
+
+
+def test_export_no_sync_exports_published_doc_without_uploading(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "doc.md"
+    document.write_text("# Doc\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(cli, ["sync", str(document)]).exit_code == 0
+    document.write_text("# Broken WIP edit\n", encoding="utf-8")
+
+    result = runner.invoke(cli, ["export", str(document), "--no-sync"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "doc.pdf").read_bytes() == b"%PDF-1.4 rendered"
+    assert api.created == 1 and api.updated == 0
+
+
+def test_fix_local_rewrites_file_without_syncing(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "broken.md"
+    original = "# Broken\n\n```mermaid\nnope\n```\n"
+    document.write_text(original, encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["fix", str(document), "--local", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["fixed"] == 1
+    assert document.read_text(encoding="utf-8") == "# Fixed locally\n"
+    assert Path(payload["backup"]).read_text(encoding="utf-8") == original
+    assert api.created == 0
+    assert api.updated == 0
+    assert api.verified == 0
 
 
 def test_fix_backs_up_rewrites_resyncs_and_verifies(monkeypatch, tmp_path):

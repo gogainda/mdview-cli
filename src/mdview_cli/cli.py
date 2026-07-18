@@ -77,6 +77,7 @@ def result_payload(document_id, share, report, created=False):
     return {
         "document_id": document_id,
         "created": created,
+        "url": f"{base_url()}/p/{document_id}",
         "share_url": share_url(share) if share else None,
         "renderable": verdict(report),
         "diagrams": report.get("diagrams", {}),
@@ -90,6 +91,8 @@ def print_result(payload, as_json=False, *, check=True):
         click.echo(json.dumps(payload, separators=(",", ":")))
     else:
         click.echo(f"Document: {payload['document_id']}")
+        if payload.get("url"):
+            click.echo(f"Private: {payload['url']}")
         if payload.get("share_url"):
             click.echo(f"Share: {payload['share_url']}")
         diagrams = payload.get("diagrams") or {}
@@ -109,7 +112,7 @@ def print_result(payload, as_json=False, *, check=True):
         raise click.exceptions.Exit(1)
 
 
-def sync_file(path: Path, *, api=None, state=None, title=None, document_id=None, share=True, verify=True):
+def sync_file(path: Path, *, api=None, state=None, title=None, document_id=None, share=False, verify=True):
     if not path.is_file():
         raise click.UsageError(f"File not found: {path}")
     markdown = path.read_text(encoding="utf-8")
@@ -198,17 +201,54 @@ def keys_list():
     click.echo("default" if get_token() else "No token configured.")
 
 
+def repair_synced_file(file, api, state, document_id):
+    repaired = api.fix(document_id)
+    markdown = repaired.get("markdown")
+    if markdown is None:
+        raise ServiceError("The repair response did not include Markdown.")
+    backup = backup_file(file, document_id)
+    atomic_write(file, markdown)
+    payload = sync_file(file, api=api, state=state)
+    payload["backup"] = str(backup)
+    payload["fixed"] = repaired.get("diagrams", {}).get("fixed", 0)
+    return payload
+
+
 @cli.command("sync")
 @click.argument("file", type=click.Path(path_type=Path))
+@click.option("--no-fix", "no_fix", is_flag=True, help="Skip auto-repair; just report failing diagrams.")
 @click.option("--title")
 @click.option("--id", "document_id")
-@click.option("--no-share", is_flag=True)
 @click.option("--json", "as_json", is_flag=True)
 @service_errors
-def sync_command(file, title, document_id, no_share, as_json):
-    """Update FILE, preserve its URL, and verify PDF rendering."""
-    payload = sync_file(file, title=title, document_id=document_id, share=not no_share)
+def sync_command(file, no_fix, title, document_id, as_json):
+    """Sync FILE to its private /p/ page, repairing broken diagrams on the way."""
+    api = api_for_token()
+    state = DocumentState()
+    payload = sync_file(file, api=api, state=state, title=title, document_id=document_id)
+    if not payload["renderable"] and not no_fix:
+        try:
+            payload = repair_synced_file(file, api, state, payload["document_id"])
+        except ApiError as error:
+            click.secho(f"Auto-repair unavailable: {error}", fg="yellow", err=True)
     print_result(payload, as_json)
+
+
+@cli.command("share")
+@click.argument("file", required=False, type=click.Path(path_type=Path))
+@click.option("--id", "document_id")
+@service_errors
+def share_command(file, document_id):
+    """Make FILE's document public and print its share URL."""
+    state = DocumentState()
+    association = state.get(base_url(), file) if file else None
+    document_id = document_id or (association and association["document_id"])
+    if not document_id:
+        raise click.UsageError("Provide a synced FILE or --id.")
+    sid = share_id(api_for_token().share(document_id))
+    if file:
+        state.put(base_url(), file, document_id, sid, None)
+    click.echo(share_url(sid))
 
 
 @cli.command("verify")
@@ -227,42 +267,77 @@ def verify_command(file, document_id, status, as_json):
     print_result(payload, as_json)
 
 
+def backup_file(path: Path, key: str) -> Path:
+    backup_dir = data_dir() / "backups" / key
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = backup_dir / f"{stamp}-{path.name}"
+    shutil.copy2(path, backup)
+    return backup
+
+
 @cli.command("fix")
 @click.argument("file", type=click.Path(path_type=Path))
+@click.option("--local", "local_only", is_flag=True, help="Repair the file in place without creating a saved document.")
 @click.option("--json", "as_json", is_flag=True)
 @service_errors
-def fix_command(file, as_json):
+def fix_command(file, local_only, as_json):
+    if local_only:
+        if not file.is_file():
+            raise click.UsageError(f"File not found: {file}")
+        report = api_for_token().fix_markdown(file.read_text(encoding="utf-8"))
+        diagrams = report.get("diagrams", {})
+        payload = {
+            "renderable": bool(report.get("renderable")),
+            "fixed": diagrams.get("fixed", 0),
+            "remaining": diagrams.get("remaining", 0),
+            "backup": None,
+        }
+        markdown = report.get("markdown")
+        if payload["fixed"] and markdown:
+            payload["backup"] = str(backup_file(file, "local"))
+            atomic_write(file, markdown)
+        if as_json:
+            click.echo(json.dumps(payload, separators=(",", ":")))
+        else:
+            if payload["backup"]:
+                click.echo(f"Fixed {payload['fixed']} diagram(s); backup: {payload['backup']}")
+            if payload["renderable"]:
+                click.secho("Renderable: yes", fg="green")
+            else:
+                click.secho(f"Renderable: no ({payload['remaining']} diagrams still failing)", fg="red", err=True)
+        if not payload["renderable"]:
+            raise click.exceptions.Exit(1)
+        return
     api = api_for_token()
     state = DocumentState()
     initial = sync_file(file, api=api, state=state, verify=False)
-    repaired = api.fix(initial["document_id"])
-    markdown = repaired.get("markdown")
-    if markdown is None:
-        raise ServiceError("The repair response did not include Markdown.")
-    backup_dir = data_dir() / "backups" / initial["document_id"]
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = backup_dir / f"{stamp}-{file.name}"
-    shutil.copy2(file, backup)
-    atomic_write(file, markdown)
-    payload = sync_file(file, api=api, state=state)
-    payload["backup"] = str(backup)
-    payload["fixed"] = repaired.get("diagrams", {}).get("fixed", 0)
+    payload = repair_synced_file(file, api, state, initial["document_id"])
     print_result(payload, as_json)
 
 
 @cli.command("export")
-@click.argument("file", type=click.Path(path_type=Path))
+@click.argument("file", required=False, type=click.Path(path_type=Path))
 @click.option("-o", "--output", type=click.Path(path_type=Path))
+@click.option("--id", "document_id")
+@click.option("--no-sync", "no_sync", is_flag=True, help="Export the published document as-is, without uploading local changes.")
 @click.option("--force", is_flag=True)
 @service_errors
-def export_command(file, output, force):
+def export_command(file, output, document_id, no_sync, force):
     api = api_for_token()
-    payload = sync_file(file, api=api)
+    if no_sync or file is None:
+        association = DocumentState().get(base_url(), file) if file else None
+        document_id = document_id or (association and association["document_id"])
+        if not document_id:
+            raise click.UsageError("Provide an associated FILE or --id.")
+        report = api.verify(document_id)
+        payload = result_payload(document_id, association and association["share_id"], report)
+    else:
+        payload = sync_file(file, api=api, document_id=document_id)
     print_result(payload, check=False)
     if not payload["renderable"] and not force:
         raise click.ClickException("Document is not Renderable; use --force to export anyway.")
-    output = output or file.with_suffix(".pdf")
+    output = output or (file.with_suffix(".pdf") if file else Path(f"{payload['document_id']}.pdf"))
     pdf = api.export_pdf(payload["document_id"])
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(output, pdf)
