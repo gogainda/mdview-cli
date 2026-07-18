@@ -9,6 +9,12 @@ uv tool install mdview-cli    # or: pipx install mdview-cli, pip install mdview-
 mdv notes.md
 ```
 
+Homebrew users:
+
+```bash
+brew install gogainda/tap/mdview-cli
+```
+
 That's the whole workflow: `mdv FILE.md` publishes the file to
 [mdview.io](https://mdview.io), opens the rendered page, and prints a link you
 can send to anyone. Anonymous previews last 30 days and take files up to 2 MB.
