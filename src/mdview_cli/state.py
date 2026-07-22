@@ -19,6 +19,10 @@ class DocumentState:
                 PRIMARY KEY (server, path)
             )"""
         )
+        columns = [row[1] for row in self.connection.execute("PRAGMA table_info(associations)")]
+        if "content_hash" not in columns:
+            self.connection.execute("ALTER TABLE associations ADD COLUMN content_hash TEXT")
+            self.connection.commit()
 
     @staticmethod
     def canonical(path: Path) -> str:
@@ -26,22 +30,23 @@ class DocumentState:
 
     def get(self, server: str, path: Path):
         row = self.connection.execute(
-            "SELECT document_id, share_id, updated_at FROM associations WHERE server = ? AND path = ?",
+            "SELECT document_id, share_id, updated_at, content_hash FROM associations WHERE server = ? AND path = ?",
             (server, self.canonical(path)),
         ).fetchone()
         if not row:
             return None
-        return {"document_id": row[0], "share_id": row[1], "updated_at": row[2]}
+        return {"document_id": row[0], "share_id": row[1], "updated_at": row[2], "content_hash": row[3]}
 
-    def put(self, server: str, path: Path, document_id: str, share_id=None, updated_at=None):
+    def put(self, server: str, path: Path, document_id: str, share_id=None, updated_at=None, content_hash=None):
         self.connection.execute(
-            """INSERT INTO associations (server, path, document_id, share_id, updated_at)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO associations (server, path, document_id, share_id, updated_at, content_hash)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(server, path) DO UPDATE SET
                  document_id=excluded.document_id,
                  share_id=COALESCE(excluded.share_id, associations.share_id),
-                 updated_at=COALESCE(excluded.updated_at, associations.updated_at)""",
-            (server, self.canonical(path), document_id, share_id, updated_at),
+                 updated_at=COALESCE(excluded.updated_at, associations.updated_at),
+                 content_hash=COALESCE(excluded.content_hash, associations.content_hash)""",
+            (server, self.canonical(path), document_id, share_id, updated_at, content_hash),
         )
         self.connection.commit()
 

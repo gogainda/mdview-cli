@@ -63,8 +63,15 @@ When — and only when — you decide to publish, make it public; and grab a PDF
 at any point:
 
 ```bash
-mdv share spec.md     # mint the public /s/ link (from then on it follows your syncs)
-mdv export spec.md    # render the current revision to spec.pdf
+mdv share spec.md               # mint the public /s/ link (from then on it follows your syncs)
+mdv share spec.md --slug my-doc # …or with a custom /s/my-doc slug
+mdv export spec.md              # render the current revision to spec.pdf
+```
+
+Or do both steps at once — sync, auto-repair, and share in one call:
+
+```bash
+mdv publish spec.md --slug my-doc   # sync + repair + share, atomically
 ```
 
 Useful around the loop:
@@ -73,6 +80,7 @@ Useful around the loop:
 mdv sync spec.md --no-fix     # fast sync: skip auto-repair, just report failures
 mdv export spec.md --no-sync  # PDF of the last synced revision; local edits stay private
 mdv list                      # all saved documents with their URLs
+mdv status spec.md            # document ID, public state, last sync, local edits pending?
 mdv unlink spec.md            # forget the file↔document link; the document stays online
 ```
 
@@ -127,11 +135,13 @@ for reading a local file without uploading it, use `mdv open`.
 | `mdv FILE.md` / `mdv preview` | no | Publish anonymously, open the rendered page (30-day link) |
 | `mdv open` | no | Render locally in the browser; nothing is uploaded |
 | `mdv sync` | yes | Update a saved document at its private /p/ URL, verify + auto-repair |
-| `mdv share` | yes | Make a synced document public at its /s/ URL |
+| `mdv share` | yes | Make a synced document public at its /s/ URL, optionally with `--slug` |
+| `mdv publish` | yes | Sync + auto-repair + share in one call |
 | `mdv verify` | yes | Re-check rendering of a synced document |
 | `mdv fix` | yes | Repair broken Mermaid diagrams, with a local backup |
 | `mdv export` | yes | Export a synced document to PDF |
 | `mdv list` | yes | List saved documents |
+| `mdv status` | yes | Show a synced document's ID, public state, slug, and whether local edits are unsynced |
 | `mdv unlink` | no | Remove the local file↔document association |
 | `mdv keys set/list/path/unset` | — | Manage the stored CLI token |
 

@@ -1,4 +1,9 @@
+import time
+
 import httpx
+
+BUSY_RETRY_ATTEMPTS = 4
+BUSY_RETRY_DELAY = 1.0
 
 
 class ApiError(RuntimeError):
@@ -16,18 +21,24 @@ class MdviewApi:
         )
 
     def request(self, method: str, path: str, **kwargs):
-        try:
-            response = self.client.request(method, path, **kwargs)
-        except httpx.HTTPError as error:
-            raise ApiError(f"Could not reach mdview.io: {error}") from error
-        if response.is_error:
+        delay = BUSY_RETRY_DELAY
+        for attempt in range(BUSY_RETRY_ATTEMPTS):
             try:
-                body = response.json()
-                message = body.get("message") or body.get("error") or response.reason_phrase
-            except ValueError:
-                message = response.reason_phrase
-            raise ApiError(str(message), response.status_code)
-        return response
+                response = self.client.request(method, path, **kwargs)
+            except httpx.HTTPError as error:
+                raise ApiError(f"Could not reach mdview.io: {error}") from error
+            if response.is_error:
+                try:
+                    body = response.json()
+                    message = body.get("message") or body.get("error") or response.reason_phrase
+                except ValueError:
+                    message = response.reason_phrase
+                if "busy" in str(message).lower() and attempt < BUSY_RETRY_ATTEMPTS - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise ApiError(str(message), response.status_code)
+            return response
 
     def create(self, title, content):
         return self.request("POST", "/api/documents", json={"title": title, "content": content}).json()
@@ -43,6 +54,9 @@ class MdviewApi:
 
     def share(self, document_id):
         return self.request("POST", f"/api/documents/{document_id}/share", json={}).json()
+
+    def set_slug(self, document_id, slug):
+        return self.request("PATCH", f"/api/documents/{document_id}/share/slug", json={"slug": slug}).json()
 
     def verify(self, document_id, status=False):
         suffix = "/status" if status else ""

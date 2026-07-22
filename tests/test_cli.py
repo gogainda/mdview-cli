@@ -15,6 +15,7 @@ class FakeApi:
         self.verified = 0
         self.shared = 0
         self.missing_on_update = False
+        self.slug_calls = []
 
     def create(self, title, content):
         self.created += 1
@@ -30,6 +31,13 @@ class FakeApi:
     def share(self, document_id):
         self.shared += 1
         return {"shortId": "share123"}
+
+    def set_slug(self, document_id, slug):
+        self.slug_calls.append((document_id, slug))
+        return {"customSlug": slug}
+
+    def documents(self):
+        return [{"id": "doc123", "title": "Doc", "customSlug": "share123"}]
 
     def verify(self, document_id, status=False):
         self.verified += 1
@@ -264,6 +272,86 @@ def test_fix_local_rewrites_file_without_syncing(monkeypatch, tmp_path):
     assert api.created == 0
     assert api.updated == 0
     assert api.verified == 0
+
+
+def test_share_accepts_custom_slug_and_json(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "doc.md"
+    document.write_text("# Doc\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(cli, ["sync", str(document)]).exit_code == 0
+
+    result = runner.invoke(cli, ["share", str(document), "--slug", "my-slug", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["slug"] == "my-slug"
+    assert payload["share_url"] == "https://mdview.io/s/my-slug"
+    assert api.slug_calls == [("doc123", "my-slug")]
+
+
+def test_publish_syncs_and_shares_with_slug_in_one_step(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "doc.md"
+    document.write_text("# Doc\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["publish", str(document), "--slug", "my-slug", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["share_url"] == "https://mdview.io/s/my-slug"
+    assert api.created == 1
+    assert api.shared == 1
+    assert api.slug_calls == [("doc123", "my-slug")]
+
+
+def test_publish_repairs_broken_diagrams_before_sharing(monkeypatch, tmp_path):
+    api = FakeApi(renderable=False)
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "broken.md"
+    document.write_text("# Broken\n\n```mermaid\nnope\n```\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["publish", str(document), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["renderable"] is True
+    assert payload["share_url"] == "https://mdview.io/s/share123"
+    assert document.read_text(encoding="utf-8").startswith("# Fixed")
+
+
+def test_status_reports_unlinked_file(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "doc.md"
+    document.write_text("# Doc\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["status", str(document), "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"file": str(document), "linked": False}
+
+
+def test_status_reconciles_share_state_from_server_and_detects_dirty_file(monkeypatch, tmp_path):
+    api = FakeApi()
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "doc.md"
+    document.write_text("# Doc\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(cli, ["sync", str(document)]).exit_code == 0
+
+    clean = runner.invoke(cli, ["status", str(document), "--json"])
+    document.write_text("# Doc\n\nEdited locally.\n", encoding="utf-8")
+    dirty = runner.invoke(cli, ["status", str(document), "--json"])
+
+    clean_payload = json.loads(clean.output)
+    dirty_payload = json.loads(dirty.output)
+    assert clean_payload["published"] is True
+    assert clean_payload["share_url"] == "https://mdview.io/s/share123"
+    assert clean_payload["dirty"] is False
+    assert dirty_payload["dirty"] is True
 
 
 def test_fix_backs_up_rewrites_resyncs_and_verifies(monkeypatch, tmp_path):

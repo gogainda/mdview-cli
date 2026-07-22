@@ -1,5 +1,6 @@
 import base64
 import functools
+import hashlib
 import io
 import json
 import os
@@ -67,6 +68,10 @@ def share_url(share):
     return f"{base_url()}/s/{share}"
 
 
+def content_hash(markdown: str) -> str:
+    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+
 def verdict(report) -> bool:
     if "renderable" in report:
         return bool(report["renderable"])
@@ -112,7 +117,7 @@ def print_result(payload, as_json=False, *, check=True):
         raise click.exceptions.Exit(1)
 
 
-def sync_file(path: Path, *, api=None, state=None, title=None, document_id=None, share=False, verify=True):
+def sync_file(path: Path, *, api=None, state=None, title=None, document_id=None, share=False, slug=None, verify=True):
     if not path.is_file():
         raise click.UsageError(f"File not found: {path}")
     markdown = path.read_text(encoding="utf-8")
@@ -128,21 +133,25 @@ def sync_file(path: Path, *, api=None, state=None, title=None, document_id=None,
         created_body = api.create(doc_title, markdown)
         document_id = created_body["id"]
         updated_at = created_body.get("updated_at")
+        existing_share = existing_share or share_id(created_body)
     else:
         try:
             updated = api.update(document_id, doc_title, markdown, updated_at)
             updated_at = updated.get("updated_at")
+            existing_share = existing_share or share_id(updated)
         except ApiError as error:
             if error.status_code != 404 or document_id != (association and association["document_id"]):
                 raise
             created_body = api.create(doc_title, markdown)
             document_id = created_body["id"]
             updated_at = created_body.get("updated_at")
-            existing_share = None
+            existing_share = share_id(created_body)
             created = True
     if share and not existing_share:
         existing_share = share_id(api.share(document_id))
-    state.put(base_url(), path, document_id, existing_share, updated_at)
+    if slug and existing_share and slug != existing_share:
+        existing_share = share_id(api.set_slug(document_id, slug)) or slug
+    state.put(base_url(), path, document_id, existing_share, updated_at, content_hash(markdown))
     report = api.verify(document_id) if verify else {"renderable": True, "diagrams": {}, "tables": {}}
     return result_payload(document_id, existing_share, report, created)
 
@@ -201,14 +210,14 @@ def keys_list():
     click.echo("default" if get_token() else "No token configured.")
 
 
-def repair_synced_file(file, api, state, document_id):
+def repair_synced_file(file, api, state, document_id, *, share=False, slug=None):
     repaired = api.fix(document_id)
     markdown = repaired.get("markdown")
     if markdown is None:
         raise ServiceError("The repair response did not include Markdown.")
     backup = backup_file(file, document_id)
     atomic_write(file, markdown)
-    payload = sync_file(file, api=api, state=state)
+    payload = sync_file(file, api=api, state=state, share=share, slug=slug)
     payload["backup"] = str(backup)
     payload["fixed"] = repaired.get("diagrams", {}).get("fixed", 0)
     return payload
@@ -234,21 +243,51 @@ def sync_command(file, no_fix, title, document_id, as_json):
     print_result(payload, as_json)
 
 
+@cli.command("publish")
+@click.argument("file", type=click.Path(path_type=Path))
+@click.option("--title")
+@click.option("--slug", help="Set a custom share slug, e.g. /s/SLUG.")
+@click.option("--id", "document_id")
+@click.option("--no-fix", "no_fix", is_flag=True, help="Skip auto-repair; just report failing diagrams.")
+@click.option("--json", "as_json", is_flag=True)
+@service_errors
+def publish_command(file, title, slug, document_id, no_fix, as_json):
+    """Sync FILE, repair broken diagrams, and make it public in one step."""
+    api = api_for_token()
+    state = DocumentState()
+    payload = sync_file(file, api=api, state=state, title=title, document_id=document_id, share=True, slug=slug)
+    if not payload["renderable"] and not no_fix:
+        try:
+            payload = repair_synced_file(file, api, state, payload["document_id"], share=True, slug=slug)
+        except ApiError as error:
+            click.secho(f"Auto-repair unavailable: {error}", fg="yellow", err=True)
+    print_result(payload, as_json)
+
+
 @cli.command("share")
 @click.argument("file", required=False, type=click.Path(path_type=Path))
 @click.option("--id", "document_id")
+@click.option("--slug", help="Set a custom share slug, e.g. /s/SLUG.")
+@click.option("--json", "as_json", is_flag=True)
 @service_errors
-def share_command(file, document_id):
+def share_command(file, document_id, slug, as_json):
     """Make FILE's document public and print its share URL."""
     state = DocumentState()
     association = state.get(base_url(), file) if file else None
     document_id = document_id or (association and association["document_id"])
     if not document_id:
         raise click.UsageError("Provide a synced FILE or --id.")
-    sid = share_id(api_for_token().share(document_id))
+    api = api_for_token()
+    sid = share_id(api.share(document_id))
+    if slug and slug != sid:
+        sid = share_id(api.set_slug(document_id, slug)) or slug
     if file:
         state.put(base_url(), file, document_id, sid, None)
-    click.echo(share_url(sid))
+    url = share_url(sid)
+    if as_json:
+        click.echo(json.dumps({"document_id": document_id, "slug": sid, "share_url": url}, separators=(",", ":")))
+    else:
+        click.echo(url)
 
 
 @cli.command("verify")
@@ -363,6 +402,55 @@ def list_command(as_json):
 def unlink_command(file):
     removed = DocumentState().unlink(base_url(), file)
     click.echo("Association removed; remote document was not deleted." if removed else "No association found.")
+
+
+@cli.command("status")
+@click.argument("file", type=click.Path(path_type=Path))
+@click.option("--json", "as_json", is_flag=True)
+@service_errors
+def status_command(file, as_json):
+    """Show FILE's linked document, public state, and whether it has unsynced local changes."""
+    state = DocumentState()
+    association = state.get(base_url(), file)
+    if not association:
+        if as_json:
+            click.echo(json.dumps({"file": str(file), "linked": False}, separators=(",", ":")))
+        else:
+            click.echo(f"{file}: not linked. Run 'mdv sync {file}' to create an association.")
+        return
+    document_id = association["document_id"]
+    documents = api_for_token().documents()
+    remote = next((doc for doc in documents if doc.get("id") == document_id), None)
+    sid = share_id(remote) if remote else association["share_id"]
+    if remote and sid != association["share_id"]:
+        state.put(base_url(), file, document_id, sid, association["updated_at"])
+    local_hash = content_hash(file.read_text(encoding="utf-8")) if file.is_file() else None
+    dirty = bool(local_hash and association["content_hash"] and local_hash != association["content_hash"])
+    payload = {
+        "file": str(file),
+        "linked": True,
+        "document_id": document_id,
+        "url": f"{base_url()}/p/{document_id}",
+        "published": bool(sid),
+        "slug": sid,
+        "share_url": share_url(sid) if sid else None,
+        "last_synced": association["updated_at"],
+        "dirty": dirty,
+        "found_remote": remote is not None,
+    }
+    if as_json:
+        click.echo(json.dumps(payload, separators=(",", ":")))
+        return
+    click.echo(f"Document: {payload['document_id']}")
+    click.echo(f"Private: {payload['url']}")
+    click.echo(f"Share: {payload['share_url']}" if payload["share_url"] else "Public: no")
+    click.echo(f"Last synced: {payload['last_synced'] or 'unknown'}")
+    if not payload["found_remote"]:
+        click.secho("Warning: document not found in account's document list.", fg="yellow", err=True)
+    if dirty:
+        click.secho("Local file has changes not yet synced.", fg="yellow")
+    elif local_hash is not None:
+        click.echo("Local file matches last synced version.")
 
 
 @cli.command("preview")
