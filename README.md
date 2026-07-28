@@ -38,6 +38,23 @@ that shouldn't leave your machine.
 mdv open notes.md
 ```
 
+## Common use cases
+
+```bash
+mdv notes.md                       # preview and share a one-off Markdown file
+mdv open notes.md                  # preview locally without uploading
+mdv sync notes.md --no-fix         # check that Markdown and Mermaid render cleanly
+mdv fix notes.md --local           # repair broken Mermaid in the local file
+mdv sync notes.md                  # update a private document and auto-repair it
+mdv share notes.md                 # publish the synced document at a stable URL
+mdv export notes.md                # create notes.pdf
+```
+
+For a quick renderability check, `mdv sync FILE --no-fix` exits `0` when the
+document renders cleanly and `1` when it does not. It never modifies the local
+file, but it does require a token and uploads the current contents to the
+document's private mdview.io page.
+
 ## Iterating on one document
 
 Previews are throwaway: every run mints a new link. When you keep working on
