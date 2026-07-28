@@ -95,7 +95,8 @@ def print_result(payload, as_json=False, *, check=True):
     if as_json:
         click.echo(json.dumps(payload, separators=(",", ":")))
     else:
-        click.echo(f"Document: {payload['document_id']}")
+        if payload.get("document_id"):
+            click.echo(f"Document: {payload['document_id']}")
         if payload.get("url"):
             click.echo(f"Private: {payload['url']}")
         if payload.get("share_url"):
@@ -297,12 +298,29 @@ def share_command(file, document_id, slug, as_json):
 @click.option("--json", "as_json", is_flag=True)
 @service_errors
 def verify_command(file, document_id, status, as_json):
-    association = DocumentState().get(base_url(), file) if file else None
-    document_id = document_id or (association and association["document_id"])
+    """Check whether FILE renders cleanly, deleting the temporary document afterward."""
+    api = api_for_token()
+    if file:
+        if not file.is_file():
+            raise click.UsageError(f"File not found: {file}")
+        markdown = file.read_text(encoding="utf-8")
+        document_id = api.create(title_for(file, markdown), markdown)["id"]
+        try:
+            report = api.verify(document_id, status=status)
+        finally:
+            api.delete(document_id)
+        payload = {
+            "renderable": verdict(report),
+            "diagrams": report.get("diagrams", {}),
+            "tables": report.get("tables", {}),
+            "failures": report.get("failures", []),
+        }
+        print_result(payload, as_json)
+        return
     if not document_id:
-        raise click.UsageError("Provide an associated FILE or --id.")
-    report = api_for_token().verify(document_id, status=status)
-    payload = result_payload(document_id, association and association["share_id"], report)
+        raise click.UsageError("Provide FILE or --id.")
+    report = api.verify(document_id, status=status)
+    payload = result_payload(document_id, None, report)
     print_result(payload, as_json)
 
 
@@ -355,14 +373,14 @@ def fix_command(file, local_only, as_json):
     print_result(payload, as_json)
 
 
-@cli.command("export")
+@cli.command("pdf")
 @click.argument("file", required=False, type=click.Path(path_type=Path))
 @click.option("-o", "--output", type=click.Path(path_type=Path))
 @click.option("--id", "document_id")
 @click.option("--no-sync", "no_sync", is_flag=True, help="Export the published document as-is, without uploading local changes.")
 @click.option("--force", is_flag=True)
 @service_errors
-def export_command(file, output, document_id, no_sync, force):
+def pdf_command(file, output, document_id, no_sync, force):
     api = api_for_token()
     if no_sync or file is None:
         association = DocumentState().get(base_url(), file) if file else None
@@ -375,7 +393,7 @@ def export_command(file, output, document_id, no_sync, force):
         payload = sync_file(file, api=api, document_id=document_id)
     print_result(payload, check=False)
     if not payload["renderable"] and not force:
-        raise click.ClickException("Document is not Renderable; use --force to export anyway.")
+        raise click.ClickException("Document is not Renderable; use --force to create the PDF anyway.")
     output = output or (file.with_suffix(".pdf") if file else Path(f"{payload['document_id']}.pdf"))
     pdf = api.export_pdf(payload["document_id"])
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -52,6 +52,9 @@ class MdviewApi:
             body["clientUpdatedAt"] = updated_at
         return self.request("PUT", f"/api/documents/{document_id}", json=body).json()
 
+    def delete(self, document_id):
+        self.request("DELETE", f"/api/documents/{document_id}")
+
     def share(self, document_id):
         return self.request("POST", f"/api/documents/{document_id}/share", json={}).json()
 

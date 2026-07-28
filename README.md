@@ -43,17 +43,17 @@ mdv open notes.md
 ```bash
 mdv notes.md                       # preview and share a one-off Markdown file
 mdv open notes.md                  # preview locally without uploading
-mdv sync notes.md --no-fix         # check that Markdown and Mermaid render cleanly
+mdv verify notes.md                 # check rendering, then delete the remote copy
 mdv fix notes.md --local           # repair broken Mermaid in the local file
 mdv sync notes.md                  # update a private document and auto-repair it
 mdv share notes.md                 # publish the synced document at a stable URL
-mdv export notes.md                # create notes.pdf
+mdv pdf notes.md                   # create notes.pdf
 ```
 
-For a quick renderability check, `mdv sync FILE --no-fix` exits `0` when the
-document renders cleanly and `1` when it does not. It never modifies the local
-file, but it does require a token and uploads the current contents to the
-document's private mdview.io page.
+For a quick renderability check, `mdv verify FILE` exits `0` when the document
+renders cleanly and `1` when it does not. It never modifies the local file. It
+requires a token, uploads the current contents to a temporary private document,
+and deletes that document after the check.
 
 ## Iterating on one document
 
@@ -82,7 +82,7 @@ at any point:
 ```bash
 mdv share spec.md               # mint the public /s/ link (from then on it follows your syncs)
 mdv share spec.md --slug my-doc # …or with a custom /s/my-doc slug
-mdv export spec.md              # render the current revision to spec.pdf
+mdv pdf spec.md                 # render the current revision to spec.pdf
 ```
 
 Or do both steps at once — sync, auto-repair, and share in one call:
@@ -95,7 +95,7 @@ Useful around the loop:
 
 ```bash
 mdv sync spec.md --no-fix     # fast sync: skip auto-repair, just report failures
-mdv export spec.md --no-sync  # PDF of the last synced revision; local edits stay private
+mdv pdf spec.md --no-sync     # PDF of the last synced revision; local edits stay private
 mdv list                      # all saved documents with their URLs
 mdv status spec.md            # document ID, public state, last sync, local edits pending?
 mdv unlink spec.md            # forget the file↔document link; the document stays online
@@ -126,7 +126,7 @@ Renderable: yes (3 diagrams, 0 tables)
 $ mdv share spec.md                # happy with it — make it public
 https://mdview.io/s/9a2b8fb1
 
-$ mdv export spec.md               # …and hand over a PDF
+$ mdv pdf spec.md                  # …and hand over a PDF
 PDF: spec.pdf
 ```
 
@@ -140,9 +140,10 @@ public link didn't exist until it was asked for.
 **When this flow fits:** a document that lives longer than one paste — specs,
 architecture docs, reports, runbooks, agent-written docs you refine over
 hours or days. Use it when reviewers follow one link that must always show
-the latest good revision, when a PDF has to be producible at any moment, or
-in CI as a docs gate (`mdv sync --no-fix` exits `1` on broken diagrams
-without editing anything). For a one-off snapshot, `mdv preview` is enough;
+the latest good revision, or when a PDF has to be producible at any moment. In
+CI, use `mdv verify FILE` as a docs gate; it exits `1` on broken diagrams,
+leaves the file untouched, and removes its temporary remote document afterward.
+For a one-off snapshot, `mdv preview` is enough;
 for reading a local file without uploading it, use `mdv open`.
 
 ## Reference
@@ -154,9 +155,9 @@ for reading a local file without uploading it, use `mdv open`.
 | `mdv sync` | yes | Update a saved document at its private /p/ URL, verify + auto-repair |
 | `mdv share` | yes | Make a synced document public at its /s/ URL, optionally with `--slug` |
 | `mdv publish` | yes | Sync + auto-repair + share in one call |
-| `mdv verify` | yes | Re-check rendering of a synced document |
+| `mdv verify` | yes | Check a local file's rendering, then delete the temporary remote document |
 | `mdv fix` | yes | Repair broken Mermaid diagrams, with a local backup |
-| `mdv export` | yes | Export a synced document to PDF |
+| `mdv pdf` | yes | Export a synced document to PDF |
 | `mdv list` | yes | List saved documents |
 | `mdv status` | yes | Show a synced document's ID, public state, slug, and whether local edits are unsynced |
 | `mdv unlink` | no | Remove the local file↔document association |

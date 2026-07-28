@@ -13,6 +13,7 @@ class FakeApi:
         self.created = 0
         self.updated = 0
         self.verified = 0
+        self.deleted = 0
         self.shared = 0
         self.missing_on_update = False
         self.slug_calls = []
@@ -27,6 +28,9 @@ class FakeApi:
             self.missing_on_update = False
             raise ApiError("Document not found", 404)
         return {"ok": True, "updated_at": "two"}
+
+    def delete(self, document_id):
+        self.deleted += 1
 
     def share(self, document_id):
         self.shared += 1
@@ -239,7 +243,25 @@ def test_sync_auto_repairs_broken_diagrams_and_exits_zero(monkeypatch, tmp_path)
     assert "Renderable: yes" in result.output
 
 
-def test_export_no_sync_exports_published_doc_without_uploading(monkeypatch, tmp_path):
+def test_verify_checks_local_file_then_deletes_temporary_document(monkeypatch, tmp_path):
+    api = FakeApi(renderable=False)
+    configure(monkeypatch, tmp_path, api)
+    document = tmp_path / "broken.md"
+    original = "# Broken\n\n```mermaid\nnope\n```\n"
+    document.write_text(original, encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["verify", str(document)])
+
+    assert result.exit_code == 1
+    assert "Renderable: no" in result.output
+    assert "Document:" not in result.output
+    assert api.created == 1
+    assert api.verified == 1
+    assert api.deleted == 1
+    assert document.read_text(encoding="utf-8") == original
+
+
+def test_pdf_no_sync_uses_published_doc_without_uploading(monkeypatch, tmp_path):
     api = FakeApi()
     configure(monkeypatch, tmp_path, api)
     document = tmp_path / "doc.md"
@@ -248,7 +270,7 @@ def test_export_no_sync_exports_published_doc_without_uploading(monkeypatch, tmp
     assert runner.invoke(cli, ["sync", str(document)]).exit_code == 0
     document.write_text("# Broken WIP edit\n", encoding="utf-8")
 
-    result = runner.invoke(cli, ["export", str(document), "--no-sync"])
+    result = runner.invoke(cli, ["pdf", str(document), "--no-sync"])
 
     assert result.exit_code == 0
     assert (tmp_path / "doc.pdf").read_bytes() == b"%PDF-1.4 rendered"

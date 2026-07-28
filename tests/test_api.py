@@ -59,3 +59,11 @@ def test_does_not_retry_non_busy_errors(monkeypatch):
         api.request("GET", "/api/documents/doc123")
 
     assert len(calls) == 1
+
+
+def test_delete_document(monkeypatch):
+    api, calls = make_api(monkeypatch, [FakeResponse(204, {})])
+
+    api.delete("doc123")
+
+    assert calls == [("DELETE", "/api/documents/doc123")]
